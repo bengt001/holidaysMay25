@@ -1,7 +1,8 @@
 /**
- * Gruppen-Urlaubsabstimmung – Orte + Terminabstimmung
+ * Gruppen-Urlaubsabstimmung – Orte + Terminabstimmung + Ergebnis-Seite
  * - Seite 1: Zielwahl (mit Crossfade-Slideshow)
  * - Seite 2: Terminübersicht (10.–31.05.2025), Verfügbarkeiten je Tag speichern & anzeigen
+ * - Seite 3: Ergebnis – Top-Ort + Konfetti + bester Zeitraum (max. Überschneidung)
  */
 
 const express = require('express');
@@ -18,7 +19,6 @@ if (!fs.existsSync(DATA_DIR)) {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
 }
 const VOTES_FILE = path.join(DATA_DIR, 'votes.json');
-
 
 function initStore() {
   try {
@@ -83,6 +83,8 @@ const baseStyles = `<link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/
 .fade-layer{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;transition:opacity 2.5s ease-in-out;}
 .fade-hidden{opacity:0}
 .fade-visible{opacity:1}
+@keyframes pulseIn { 0%{transform:scale(0.95);opacity:0} 100%{transform:scale(1);opacity:1} }
+.pulse-in{animation:pulseIn .6s ease-out both}
 </style>`;
 
 const PUBLIC_HTML = `<!doctype html><html lang='de'><head><meta charset='utf-8'/><meta name='viewport' content='width=device-width, initial-scale=1'/>${baseStyles}<title>Urlaubsabstimmung</title></head><body class='bg-gray-50 text-gray-900'><div class='max-w-5xl mx-auto p-6'>
@@ -91,7 +93,7 @@ const PUBLIC_HTML = `<!doctype html><html lang='de'><head><meta charset='utf-8'/
 <div><label for='name' class='block text-sm font-medium'>Dein Name</label><input id='name' name='name' type='text' required placeholder='z. B. Alex' class='mt-1 w-full border rounded-lg p-2'/></div>
 <div class='grid sm:grid-cols-2 gap-4'>
 ${OPTIONS.map(o=>
-  "<div class='border rounded-xl bg-gray-50 p-3'>" +
+  "<div class='border rounded-xl bg-gray-50 p-3 pulse-in'>" +
   "<div class='relative rounded-lg overflow-hidden mb-3 h-72 sm:h-80 w-full bg-gray-200 shadow' style='min-height:260px'>" +
     "<img id='slide-"+o.id+"-a' src='"+o.image+"' alt='"+o.title+"' class='fade-layer fade-visible' onerror=\"this.style.display='none'\">" +
     "<img id='slide-"+o.id+"-b' src='"+o.image+"' alt='"+o.title+"' class='fade-layer fade-hidden' onerror=\"this.style.display='none'\">" +
@@ -117,7 +119,7 @@ ${OPTIONS.map(o=>
 
   // Submit leitet zur Terminseite weiter
   var form=document.getElementById('voteForm'); var status=document.getElementById('status');
-  if(form){ form.addEventListener('submit', function(e){ e.preventDefault(); status.textContent=''; var name=document.getElementById('name').value.trim(); var selections=[].slice.call(document.querySelectorAll("input[name='selections']:checked")).map(function(cb){return cb.value;}); if(!name){ status.textContent='Bitte Name eingeben'; status.className='text-red-600'; return; } if(selections.length===0){ status.textContent='Bitte mindestens ein Ziel wählen'; status.className='text-red-600'; return; } fetch('/api/vote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,selections:selections})}).then(function(r){return r.json()}).then(function(data){ if(data&&data.ok){ window.location.href='/dates?name='+encodeURIComponent(name); } else { status.textContent='Fehler'; status.className='text-red-600'; } }).catch(function(){ status.textContent='Netzwerkfehler'; status.className='text-red-600'; }); }); }
+  if(form){ form.addEventListener('submit', function(e){ e.preventDefault(); status.textContent=''; var name=document.getElementById('name').value.trim(); var selections=[].slice.call(document.querySelectorAll("input[name='selections']:checked")).map(function(cb){return cb.value;}); if(!name){ status.textContent='Bitte Name eingeben'; status.className='text-red-600'; return; } if(selections.length===0){ status.textContent='Bitte mindestens ein Ziel wählen'; status.className='text-red-600'; return; } fetch('/api/vote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,selections:selections})}).then(async function(r){const t=await r.text();let d;try{d=JSON.parse(t);}catch{} if(!r.ok||!(d&&d.ok)){throw new Error((d&&d.error)||t||'Fehler');} return d;}).then(function(){ window.location.href='/dates?name='+encodeURIComponent(name); }).catch(function(err){ status.textContent='Fehler: '+(err&&err.message?err.message:'Netzwerkfehler'); status.className='text-red-600'; }); }); }
 })();
 </script></body></html>`;
 
@@ -216,8 +218,8 @@ const DATES_HTML = `<!doctype html><html lang='de'><head><meta charset='utf-8'/>
     const name = nameInput.value.trim(); if(!name){ saveStatus.textContent='Bitte Name eingeben'; saveStatus.className='text-sm text-red-600'; return; }
     const days = Array.from(document.querySelectorAll("input[type='checkbox'][data-day]:checked")).map(cb=>cb.getAttribute('data-day'));
     fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name, days})})
-      .then(r=>r.json()).then(data=>{ saveStatus.textContent='Gespeichert!'; saveStatus.className='text-sm text-green-700'; return fetchAvailability(); })
-      .then(map=>{ renderNames(map); fillOwn(map); })
+      .then(async (r)=>{ const t = await r.text(); let d; try{ d=JSON.parse(t);}catch{} if(!r.ok||!(d&&d.ok)){ throw new Error((d&&d.error)||t||'Fehler'); } return d; })
+      .then(()=>{ window.location.href = '/result?name='+encodeURIComponent(name); })
       .catch(()=>{ saveStatus.textContent='Fehler beim Speichern'; saveStatus.className='text-sm text-red-600'; });
   }
 
@@ -229,26 +231,175 @@ const DATES_HTML = `<!doctype html><html lang='de'><head><meta charset='utf-8'/>
 </script>
 </body></html>`;
 
+// ---------- Seite 3: Ergebnis ----------
+const RESULT_HTML = `<!doctype html><html lang="de"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+${baseStyles}
+<title>Ergebnis</title>
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+<style>
+.reveal { opacity:0; transform: translateY(10px); transition: all .7s ease; }
+.reveal.show { opacity:1; transform: translateY(0); }
+.big { font-size: clamp(2rem, 6vw, 4rem); line-height:1.1; }
+.sub { font-size: clamp(1.25rem, 3vw, 2rem); }
+</style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+<div class="max-w-5xl mx-auto p-6">
+  <div class="bg-white rounded-2xl shadow p-8 md:p-12 text-center">
+    <div class="big font-extrabold mb-4">Wir fahren nach …</div>
+    <div id="place" class="big text-black font-extrabold reveal mb-6"></div>
+    <div id="hero" class="relative rounded-2xl overflow-hidden h-64 md:h-80 bg-gray-200 shadow reveal"></div>
+    <div id="period" class="reveal mt-8 sub font-semibold"></div>
+    <div id="explain" class="reveal mt-2 text-sm text-gray-600"></div>
+    <div class="mt-10">
+      <a href="/" class="text-sm text-gray-600 underline">← Zurück zur Zielabstimmung</a>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  const OPTIONS = ${JSON.stringify(OPTIONS)};
+  const DATE_LIST = ${JSON.stringify(DATE_LIST)};
+  const params = new URLSearchParams(window.location.search);
+  const me = params.get('name') || '';
+
+  function optionMap(){ const m={}; OPTIONS.forEach(o=>m[o.id]=o); return m; }
+  const OMAP = optionMap();
+
+  function fetchJSON(u){ return fetch(u).then(r=>r.json()); }
+
+  // API: votes-summary (get tally) + availability
+  Promise.all([fetchJSON('/api/summary'), fetchJSON('/api/availability')]).then(([sum,av])=>{
+    // 1) Top-Ort bestimmen
+    const entries = Object.keys(sum.tally).map(k=>[k, sum.tally[k]]);
+    entries.sort((a,b)=> b[1]-a[1] || a[0].localeCompare(b[0]));
+    const top = entries.length? entries[0][0] : null;
+    const topOpt = top ? OMAP[top] : null;
+
+    // Animation Place + Konfetti
+    setTimeout(()=>{
+      if(topOpt){
+        document.getElementById('place').textContent = topOpt.title;
+        document.getElementById('place').classList.add('show');
+        // Konfetti
+        const duration = 2000, end = Date.now() + duration;
+        (function frame(){
+          confetti({ particleCount: 3, angle: 60, spread: 55, origin: { x: 0 } });
+          confetti({ particleCount: 3, angle: 120, spread: 55, origin: { x: 1 } });
+          if(Date.now() < end) requestAnimationFrame(frame);
+        })();
+      } else {
+        document.getElementById('place').textContent = '—';
+        document.getElementById('place').classList.add('show');
+      }
+    }, 900);
+
+    // 2) Hero-Slideshow
+    const hero = document.getElementById('hero');
+    function addImg(id){ const img=document.createElement('img'); img.className='absolute inset-0 w-full h-full object-cover fade-layer fade-hidden'; img.src=id; img.onload=()=>{}; hero.appendChild(img); return img; }
+    function preload(url){ return new Promise(res=>{ const i=new Image(); i.onload=()=>res(true); i.onerror=()=>res(false); i.src=url; }); }
+    function startHero(id){
+      const base = '/images/'+id+'/';
+      const candidates = []; for(let i=1;i<=10;i++) candidates.push(base+i+'.jpg');
+      const imgs=[], urls=[];
+      // container vorbereiten
+      hero.innerHTML='';
+      hero.classList.add('show');
+      // lade gültige URLs nacheinander
+      (async function(){
+        for(const u of candidates){ if(await preload(u)) urls.push(u); }
+        if(urls.length===0){ const fallback = OMAP[id]?.image; if(fallback){ urls.push(fallback); } }
+        if(urls.length===0){ return; }
+        // zwei Layer für Crossfade anlegen
+        const A = addImg(urls[0]); const B = addImg(urls[0]);
+        A.classList.remove('fade-hidden'); A.classList.add('fade-visible');
+        let activeA = true, idx=0;
+        setInterval(async ()=>{
+          if(urls.length<2) return;
+          idx=(idx+1)%urls.length; const next=urls[idx];
+          const front = activeA?A:B, back=activeA?B:A;
+          back.classList.add('fade-hidden'); back.classList.remove('fade-visible');
+          // Preload ohne Blinken
+          await preload(next); back.src = next;
+          requestAnimationFrame(()=>{
+            front.classList.add('fade-hidden'); front.classList.remove('fade-visible');
+            back.classList.remove('fade-hidden'); back.classList.add('fade-visible');
+            activeA = !activeA;
+          });
+        }, 5000);
+      })();
+    }
+    if(top) startHero(top);
+
+    // 3) Besten Zeitraum berechnen (Standard: 7 Nächte = 8 Tage)
+    function bestWindow(avMap, daysList, nights){
+      const len = nights + 1; // Nächte -> Tage
+      const byDate = avMap.byDate || {};
+      const bySet = {}; for(const d of daysList){ bySet[d] = new Set(byDate[d]||[]); }
+      function intersectMany(arrDates){
+        if(arrDates.length===0) return new Set();
+        let inter = new Set(bySet[arrDates[0]]);
+        for(let i=1;i<arrDates.length;i++){
+          const s = bySet[arrDates[i]];
+          inter = new Set([...inter].filter(x=>s.has(x)));
+          if(inter.size===0) break;
+        }
+        return inter;
+      }
+      let best = { start:null, end:null, size:0, names:[] };
+      for(let i=0;i+len-1<daysList.length;i++){
+        const windowDates = daysList.slice(i, i+len);
+        const inter = intersectMany(windowDates);
+        const size = inter.size;
+        if(size > best.size){
+          best = { start: windowDates[0], end: windowDates[len-1], size, names: [...inter].sort() };
+        }
+      }
+      return best;
+    }
+    const best = bestWindow(av, ${JSON.stringify(DATE_LIST)}, 7); // 7 Nächte
+
+    // Anzeige Zeitraum
+    function fmtDE(iso){
+      const [y,m,d]=iso.split('-'); return d+'.'+m+'.'+y;
+    }
+    const period = document.getElementById('period');
+    const explain = document.getElementById('explain');
+    setTimeout(()=>{
+      period.classList.add('show');
+      if(best && best.start){
+        period.innerHTML = "Bester Zeitraum: <span class='font-bold'>"+fmtDE(best.start)+"</span> bis <span class='font-bold'>"+fmtDE(best.end)+"</span>";
+        explain.classList.add('show');
+        const who = best.names.length ? (" ("+best.names.join(', ')+")") : "";
+        explain.textContent = "An allen Tagen in diesem Zeitraum können "+best.size+" Personen"+who+".";
+      } else {
+        period.textContent = "Noch zu wenig Daten für eine Empfehlung.";
+        explain.classList.add('show');
+        explain.textContent = "Sobald mehr Verfügbarkeiten eingetragen sind, berechnen wir die beste Überschneidung.";
+      }
+    }, 1500);
+  });
+})();
+</script>
+</body></html>`;
+
 // ---------- Routes ----------
 app.get('/', (req,res)=>{ res.setHeader('Content-Type','text/html; charset=utf-8'); res.send(PUBLIC_HTML); });
 app.get('/dates', (req,res)=>{ res.setHeader('Content-Type','text/html; charset=utf-8'); res.send(DATES_HTML); });
+app.get('/result', (req,res)=>{ res.setHeader('Content-Type','text/html; charset=utf-8'); res.send(RESULT_HTML); });
 
 // Zielabstimmung speichern
 app.post('/api/vote', (req, res) => {
   const { name, selections } = req.body || {};
-  if (!name || !Array.isArray(selections) || !selections.length) return res.status(400).json({ error: 'Ungültig' });
+  if (!name || !Array.isArray(selections) || !selections.length) return res.status(400).json({ ok:false, error: 'Ungültig' });
   const validIds = new Set(OPTIONS.map(o => o.id));
   const cleaned = Array.from(new Set(selections.filter(id => validIds.has(id))));
   const store = readStore();
   const idx = store.ballots.findIndex(b => b.name.trim().toLowerCase() === name.trim().toLowerCase());
   const ballot = { name: name.trim(), selections: cleaned, ts: Date.now() };
   if (idx >= 0) store.ballots[idx] = ballot; else store.ballots.push(ballot);
-  writeStore(store);
-  res.json({ ok: true });
-
-  if (!writeStore(store)) return res.status(500).json({ ok: false, error: 'Speichern fehlgeschlagen' });
+  if (!writeStore(store)) return res.status(500).json({ ok:false, error:'Speichern fehlgeschlagen' });
   return res.json({ ok: true });
-
 });
 
 // Verfügbarkeiten lesen/schreiben
@@ -266,28 +417,34 @@ app.get('/api/availability', (req,res)=>{
     }
   }
   res.json({ byPerson, byDate });
-
-  if (!writeStore(store)) return res.status(500).json({ ok: false, error: 'Speichern fehlgeschlagen' });
-  return res.json({ ok: true });
-
 });
 
 app.post('/api/availability', (req,res)=>{
   const { name, days } = req.body || {};
-  if (!name || !Array.isArray(days)) return res.status(400).json({ error: 'Ungültig' });
+  if (!name || !Array.isArray(days)) return res.status(400).json({ ok:false, error: 'Ungültig' });
   const set = new Set(DATE_LIST);
   const cleaned = Array.from(new Set(days.filter(d => set.has(d))));
   const store = readStore();
   if (!store.availability) store.availability = {};
   store.availability[name.trim()] = cleaned;
-  writeStore(store);
-  res.json({ ok: true });
-
-
-  if (!writeStore(store)) return res.status(500).json({ ok: false, error: 'Speichern fehlgeschlagen' });
+  if (!writeStore(store)) return res.status(500).json({ ok:false, error:'Speichern fehlgeschlagen' });
   return res.json({ ok: true });
-  
+});
+
+// Summary für Ergebnis-Seite (Tally)
+app.get('/api/summary', (req,res)=>{
+  const store = readStore();
+  const tally = {};
+  for (const o of OPTIONS) tally[o.id] = 0;
+  for (const b of store.ballots) {
+    for (const id of b.selections) if (tally.hasOwnProperty(id)) tally[id] += 1;
+  }
+  res.json({ tally, totalBallots: store.ballots.length });
 });
 
 // ---------- Start ----------
-app.listen(PORT, ()=>{ console.log(`✅ Server läuft auf http://localhost:${PORT}`); console.log('🗓️  Terminseite: /dates'); });
+app.listen(PORT, ()=>{ 
+  console.log(`✅ Server läuft auf http://localhost:${PORT}`);
+  console.log('🗓️  Terminseite: /dates');
+  console.log('🏁 Ergebnis-Seite: /result');
+});
