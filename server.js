@@ -12,7 +12,9 @@ const path = require('path');
 const PORT = process.env.PORT || 3000;
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
-const VOTES_FILE = path.join(__dirname, 'votes.json');
+const DATA_DIR   = process.env.DATA_DIR || __dirname;
+const VOTES_FILE = path.join(DATA_DIR, 'votes.json');
+
 
 function initStore() {
   if (!fs.existsSync(VOTES_FILE)) {
