@@ -12,21 +12,48 @@ const path = require('path');
 const PORT = process.env.PORT || 3000;
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
-const DATA_DIR   = process.env.DATA_DIR || __dirname;
+
+const DATA_DIR = process.env.DATA_DIR || process.env.TMPDIR || '/tmp';
+if (!fs.existsSync(DATA_DIR)) {
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
+}
 const VOTES_FILE = path.join(DATA_DIR, 'votes.json');
 
 
 function initStore() {
-  if (!fs.existsSync(VOTES_FILE)) {
-    fs.writeFileSync(VOTES_FILE, JSON.stringify({ ballots: [], availability: {} }, null, 2));
-  } else {
-    // migrate old format
-    const data = JSON.parse(fs.readFileSync(VOTES_FILE, 'utf-8'));
-    if (!('availability' in data)) { data.availability = {}; fs.writeFileSync(VOTES_FILE, JSON.stringify(data, null, 2)); }
+  try {
+    if (!fs.existsSync(VOTES_FILE)) {
+      fs.writeFileSync(VOTES_FILE, JSON.stringify({ ballots: [], availability: {} }, null, 2));
+    } else {
+      // Migration: availability ergänzen, falls alt
+      const data = JSON.parse(fs.readFileSync(VOTES_FILE, 'utf-8'));
+      if (!('availability' in data)) {
+        data.availability = {};
+        fs.writeFileSync(VOTES_FILE, JSON.stringify(data, null, 2));
+      }
+    }
+  } catch (e) {
+    console.error('initStore error:', e);
   }
 }
-function readStore() { initStore(); return JSON.parse(fs.readFileSync(VOTES_FILE, 'utf-8')); }
-function writeStore(data) { fs.writeFileSync(VOTES_FILE, JSON.stringify(data, null, 2)); }
+function readStore() {
+  initStore();
+  try {
+    return JSON.parse(fs.readFileSync(VOTES_FILE, 'utf-8'));
+  } catch (e) {
+    console.error('readStore error:', e);
+    return { ballots: [], availability: {} };
+  }
+}
+function writeStore(data) {
+  try {
+    fs.writeFileSync(VOTES_FILE, JSON.stringify(data, null, 2));
+    return true;
+  } catch (e) {
+    console.error('writeStore error:', e);
+    return false;
+  }
+}
 
 // ---------- Optionen (mit Vergleichsdaten) ----------
 const OPTIONS = [
@@ -218,6 +245,10 @@ app.post('/api/vote', (req, res) => {
   if (idx >= 0) store.ballots[idx] = ballot; else store.ballots.push(ballot);
   writeStore(store);
   res.json({ ok: true });
+
+  if (!writeStore(store)) return res.status(500).json({ ok: false, error: 'Speichern fehlgeschlagen' });
+  return res.json({ ok: true });
+
 });
 
 // Verfügbarkeiten lesen/schreiben
@@ -235,6 +266,10 @@ app.get('/api/availability', (req,res)=>{
     }
   }
   res.json({ byPerson, byDate });
+
+  if (!writeStore(store)) return res.status(500).json({ ok: false, error: 'Speichern fehlgeschlagen' });
+  return res.json({ ok: true });
+
 });
 
 app.post('/api/availability', (req,res)=>{
@@ -247,6 +282,11 @@ app.post('/api/availability', (req,res)=>{
   store.availability[name.trim()] = cleaned;
   writeStore(store);
   res.json({ ok: true });
+
+
+  if (!writeStore(store)) return res.status(500).json({ ok: false, error: 'Speichern fehlgeschlagen' });
+  return res.json({ ok: true });
+  
 });
 
 // ---------- Start ----------
