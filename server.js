@@ -304,51 +304,75 @@ ${baseStyles}
     }
     startHero(top);
 
-    // ----- Bester Zeitraum (Sliding Window über Schnittmenge) -----
-    // Normalisiere Namen case-insensitiv für die Schnittmenge, Anzeige bleibt wie geliefert.
-    const byDateLower = {};
-    for (const [d, arr] of Object.entries(av.byDate || {})) {
-      byDateLower[d] = Array.from(new Set((arr || []).map(n => (n||'').trim().toLowerCase()).filter(Boolean)));
-    }
-    function bestWindow(days, nights){
-      const len = nights + 1; // 7 Nächte = 8 Tage
-      function interSets(dateArr){
-        if (!dateArr.length) return new Set();
-        let s = new Set(byDateLower[dateArr[0]] || []);
-        for (let i=1;i<dateArr.length;i++){
-          const t = new Set(byDateLower[dateArr[i]] || []);
-          s = new Set([...s].filter(x => t.has(x)));
-          if (s.size === 0) break;
-        }
-        return s;
-      }
-      let best = { start:null, end:null, size:0, names:[] };
-      for (let i=0; i+len-1<days.length; i++){
-        const win = days.slice(i, i+len);
-        const inter = interSets(win);
-        const size = inter.size;
-        if (size > best.size) {
-          best = { start: win[0], end: win[len-1], size, names: [...inter].sort() };
-        }
-      }
-      return best;
-    }
-    const best = bestWindow(${JSON.stringify(DATE_LIST)}, 7);
+    // ----- Bester Zeitraum (Sliding Window über Schnittmenge mit variabler Länge) -----
+const byDateLower = {};
+for (const [d, arr] of Object.entries(av.byDate || {})) {
+  byDateLower[d] = Array.from(new Set((arr || []).map(n => (n||'').trim().toLowerCase()).filter(Boolean)));
+}
 
-    const period = document.getElementById('period');
-    const explain = document.getElementById('explain');
-    setTimeout(()=>{
-      period.classList.add('show');
-      explain.classList.add('show');
-      if(best && best.start){
-        period.innerHTML = "Bester Zeitraum: <span class='font-bold'>"+fmtDE(best.start)+"</span> bis <span class='font-bold'>"+fmtDE(best.end)+"</span>";
-        const who = best.names.length ? " ("+best.names.join(', ')+")" : "";
-        explain.textContent = "An allen Tagen in diesem Zeitraum können "+best.size+" Personen"+who+".";
-      } else {
-        period.textContent = "Noch zu wenig Daten für eine Empfehlung.";
-        explain.textContent = "Sobald mehr Verfügbarkeiten eingetragen sind, berechnen wir die beste Überschneidung.";
+/**
+ * Finde das Zeitfenster (4–7 Nächte), in dem die größte Überschneidung besteht.
+ * Für jedes Fenster (Länge = 5–8 Tage) wird die Schnittmenge der Personen gebildet.
+ */
+function bestVariableWindow(days, minNights = 4, maxNights = 7) {
+  let best = { start: null, end: null, size: 0, names: [], nights: 0 };
+
+  function intersection(dates) {
+    if (!dates.length) return new Set();
+    let s = new Set(byDateLower[dates[0]] || []);
+    for (let i = 1; i < dates.length; i++) {
+      const next = new Set(byDateLower[dates[i]] || []);
+      s = new Set([...s].filter(x => next.has(x)));
+      if (s.size === 0) break;
+    }
+    return s;
+  }
+
+  for (let nights = minNights; nights <= maxNights; nights++) {
+    const len = nights + 1; // z. B. 4 Nächte → 5 Tage
+    for (let i = 0; i + len - 1 < days.length; i++) {
+      const win = days.slice(i, i + len);
+      const inter = intersection(win);
+      const size = inter.size;
+      if (size > best.size || (size === best.size && (!best.start || i < days.indexOf(best.start)))) {
+        best = { start: win[0], end: win[len - 1], size, names: [...inter].sort(), nights };
       }
-    }, 1200);
+    }
+  }
+  return best;
+}
+
+const best = bestVariableWindow(${JSON.stringify(DATE_LIST)}, 4, 7);
+
+const period = document.getElementById('period');
+const explain = document.getElementById('explain');
+setTimeout(() => {
+  period.classList.add('show');
+  explain.classList.add('show');
+  if (best && best.start) {
+    const nightLabel = best.nights === 1 ? "Nacht" : "Nächte";
+    period.innerHTML =
+      "Bester Zeitraum: <span class='font-bold'>" +
+      fmtDE(best.start) +
+      "</span> bis <span class='font-bold'>" +
+      fmtDE(best.end) +
+      "</span> (" +
+      best.nights +
+      " " + nightLabel + ")";
+    const who = best.names.length ? " (" + best.names.join(', ') + ")" : "";
+    explain.textContent =
+      "In diesem Zeitraum können " +
+      best.size +
+      " Personen gemeinsam reisen" +
+      who +
+      ".";
+  } else {
+    period.textContent = "Noch zu wenig Daten für eine Empfehlung.";
+    explain.textContent =
+      "Sobald mehr Verfügbarkeiten eingetragen sind, berechnen wir die beste Überschneidung.";
+  }
+}, 1200);
+
 
     // ----- Read-only Kalender unten -----
     const calendar = document.getElementById('calendar');
