@@ -1,18 +1,15 @@
 /**
- * Gruppen-Urlaubsabstimmung – Orte + Terminabstimmung + Ergebnis-Seite (fixe Namensnormalisierung)
- * - Seite 1: Zielwahl (mit Crossfade-Slideshow)
- * - Seite 2: Terminübersicht (10.–31.05.2025), Verfügbarkeiten je Tag speichern & anzeigen
- * - Seite 3: Ergebnis – Top-Ort + Konfetti + bester Zeitraum + komplette Tally + read-only Kalender
+ * Gruppen-Urlaubsabstimmung – Orte + Termine + Ergebnis (stabil)
+ * - Seite 1: Zielwahl (Crossfade)
+ * - Seite 2: Terminübersicht (10.–31.05.2025), Verfügbarkeiten speichern & anzeigen
+ * - Seite 3: Ergebnis – Top-Ort + Konfetti + bester Zeitraum (7 Nächte) + Stimmenübersicht + read-only Kalender
  */
 
 const express = require('express');
-const basicAuth = require('basic-auth');
 const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
 
 const DATA_DIR = process.env.DATA_DIR || process.env.TMPDIR || '/tmp';
 if (!fs.existsSync(DATA_DIR)) {
@@ -23,11 +20,10 @@ const VOTES_FILE = path.join(DATA_DIR, 'votes.json');
 function initStore() {
   try {
     if (!fs.existsSync(VOTES_FILE)) {
-      fs.writeFileSync(VOTES_FILE, JSON.stringify({ ballots: [], availability: {}, people: {} }, null, 2)); // NEW: people
+      fs.writeFileSync(VOTES_FILE, JSON.stringify({ ballots: [], availability: {} }, null, 2));
     } else {
       const data = JSON.parse(fs.readFileSync(VOTES_FILE, 'utf-8'));
       if (!('availability' in data)) data.availability = {};
-      if (!('people' in data)) data.people = {}; // NEW
       fs.writeFileSync(VOTES_FILE, JSON.stringify(data, null, 2));
     }
   } catch (e) { console.error('initStore error:', e); }
@@ -35,7 +31,7 @@ function initStore() {
 function readStore() {
   initStore();
   try { return JSON.parse(fs.readFileSync(VOTES_FILE, 'utf-8')); }
-  catch (e) { console.error('readStore error:', e); return { ballots: [], availability: {}, people: {} }; }
+  catch (e) { console.error('readStore error:', e); return { ballots: [], availability: {} }; }
 }
 function writeStore(data) {
   try { fs.writeFileSync(VOTES_FILE, JSON.stringify(data, null, 2)); return true; }
@@ -70,7 +66,7 @@ const baseStyles = `<link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/
 .fade-visible{opacity:1}
 @keyframes pulseIn { 0%{transform:scale(0.95);opacity:0} 100%{transform:scale(1);opacity:1} }
 .pulse-in{animation:pulseIn .6s ease-out both}
-.bar{height:8px;border-radius:9999px;background:linear-gradient(90deg,#111 0,#444 100%)}
+.bar{height:8px;border-radius:9999px;background:#eee;overflow:hidden}
 .reveal{opacity:0;transform:translateY(10px);transition:all .7s ease}
 .reveal.show{opacity:1;transform:translateY(0)}
 .big { font-size: clamp(2rem, 6vw, 4rem); line-height:1.1; }
@@ -226,7 +222,7 @@ ${baseStyles}
 <div class="max-w-5xl mx-auto p-6">
   <div class="bg-white rounded-2xl shadow p-8 md:p-12 text-center">
     <div class="big font-extrabold mb-4">Wir fahren nach …</div>
-    <div id="place" class="big text-black font-extrabold reveal mb-6"></div>
+    <div id="place" class="big text-black font-extrabold reveal mb-6">—</div>
     <div id="hero" class="relative rounded-2xl overflow-hidden h-64 md:h-80 bg-gray-200 shadow reveal mb-8"></div>
 
     <h2 class="text-xl font-semibold mb-2">Stimmen je Ziel</h2>
@@ -249,21 +245,22 @@ ${baseStyles}
   const DATE_LIST = ${JSON.stringify(DATE_LIST)};
   const OMAP = Object.fromEntries(OPTIONS.map(o=>[o.id,o]));
 
-  function fetchJSON(u){ return fetch(u).then(r=>r.json()); }
+  function fetchJSON(u){ return fetch(u).then(r=>r.json()).catch(()=>null); }
+  function fmtDE(iso){ const [y,m,d]=iso.split('-'); return d+'.'+m+'.'+y; }
 
-  Promise.all([fetchJSON('/api/summary'), fetchJSON('/api/availability')]).then(([sum,av])=>{
-    // ----- Tally -----
+  Promise.all([fetchJSON('/api/summary'), fetchJSON('/api/availability')]).then((arr)=>{
+    const sum = arr[0] || { tally: {} };
+    const av  = arr[1] || { byDate:{}, byPerson:{} };
+
+    // ----- Tally & Sieger -----
     const entries = Object.keys(sum.tally).map(k=>[k, sum.tally[k]]).sort((a,b)=> b[1]-a[1] || a[0].localeCompare(b[0]));
-    const totalVotes = entries.reduce((acc,[,v])=>acc+v,0);
-    const top = entries.length? entries[0][0] : null;
-    const topOpt = top ? OMAP[top] : null;
+    const top = entries.length ? entries[0][0] : null;
+    const placeEl = document.getElementById('place');
 
-    // Headline + Konfetti
     setTimeout(()=>{
-      const placeEl = document.getElementById('place');
-      placeEl.textContent = topOpt ? topOpt.title : '—';
+      placeEl.textContent = top && OMAP[top] ? OMAP[top].title : '—';
       placeEl.classList.add('show');
-      if(topOpt){
+      if (top) {
         const duration = 2000, end = Date.now() + duration;
         (function frame(){
           confetti({ particleCount: 3, angle: 60, spread: 55, origin: { x: 0 } });
@@ -273,15 +270,24 @@ ${baseStyles}
       }
     }, 800);
 
-    // Hero Slideshow
+    // Balken-Übersicht
+    const tallyEl = document.getElementById('tally');
+    const maxVotes = Math.max(1, ...entries.map(([,v])=>v));
+    tallyEl.innerHTML = entries.map(([id,v])=>{
+      const title = OMAP[id]?.title || id;
+      const pct = Math.round((v / maxVotes) * 100);
+      return "<div><div class='flex justify-between text-sm'><span>"+title+"</span><span class='font-semibold'>"+v+"</span></div><div class='bar'><div style='height:100%;width:"+pct+"%;background:#111;border-radius:9999px'></div></div></div>";
+    }).join('') || "<div class='text-sm text-gray-500'>Noch keine Stimmen.</div>";
+
+    // ----- Hero-Slideshow -----
     const hero = document.getElementById('hero');
     function addImg(src){ const img=document.createElement('img'); img.className='absolute inset-0 w-full h-full object-cover fade-layer fade-hidden'; img.src=src; hero.appendChild(img); return img; }
     function preload(url){ return new Promise(res=>{ const i=new Image(); i.onload=()=>res(true); i.onerror=()=>res(false); i.src=url; }); }
     async function startHero(id){
       if(!id){ hero.classList.add('show'); return; }
       hero.innerHTML=''; hero.classList.add('show');
-      const base = '/images/'+id+'/'; const candidates=[]; for(let i=1;i<=10;i++) candidates.push(base+i+'.jpg');
-      const urls=[]; for(const u of candidates){ if(await preload(u)) urls.push(u); }
+      const base = '/images/'+id+'/'; const cand=[]; for(let i=1;i<=10;i++) cand.push(base+i+'.jpg');
+      const urls=[]; for(const u of cand){ if(await preload(u)) urls.push(u); }
       if(urls.length===0){ const fb=OMAP[id]?.image; if(fb) urls.push(fb); }
       if(urls.length===0) return;
       const A = addImg(urls[0]); const B = addImg(urls[0]);
@@ -298,43 +304,45 @@ ${baseStyles}
     }
     startHero(top);
 
-    // Tally-Liste inkl. Balken
-    const tallyEl = document.getElementById('tally');
-    const maxVotes = Math.max(1, ...entries.map(([,v])=>v));
-    tallyEl.innerHTML = entries.map(([id,v])=>{
-      const title = OMAP[id]?.title || id;
-      const pct = Math.round((v / maxVotes) * 100);
-      return "<div><div class='flex justify-between text-sm'><span>"+title+"</span><span class='font-semibold'>"+v+"</span></div><div class='bar' style='position:relative;overflow:hidden'><div style='height:100%;width:"+pct+"%;background:#111;border-radius:9999px'></div></div></div>";
-    }).join('');
-
-    // ----- Bester Zeitraum (7 Nächte) -----
-    function bestWindow(avMap, days, nights){
-      const len = nights + 1;
-      const byDate = avMap.byDate || {};
-      const sets = {}; for(const d of days){ sets[d] = new Set(byDate[d] || []); } // Namen bereits normalisiert (siehe API)
-      function inter(arr){
-        if(!arr.length) return new Set();
-        let s = new Set(sets[arr[0]]);
-        for(let i=1;i<arr.length;i++){ const ns=sets[arr[i]]; s = new Set([...s].filter(x=>ns.has(x))); if(s.size===0) break; }
+    // ----- Bester Zeitraum (Sliding Window über Schnittmenge) -----
+    // Normalisiere Namen case-insensitiv für die Schnittmenge, Anzeige bleibt wie geliefert.
+    const byDateLower = {};
+    for (const [d, arr] of Object.entries(av.byDate || {})) {
+      byDateLower[d] = Array.from(new Set((arr || []).map(n => (n||'').trim().toLowerCase()).filter(Boolean)));
+    }
+    function bestWindow(days, nights){
+      const len = nights + 1; // 7 Nächte = 8 Tage
+      function interSets(dateArr){
+        if (!dateArr.length) return new Set();
+        let s = new Set(byDateLower[dateArr[0]] || []);
+        for (let i=1;i<dateArr.length;i++){
+          const t = new Set(byDateLower[dateArr[i]] || []);
+          s = new Set([...s].filter(x => t.has(x)));
+          if (s.size === 0) break;
+        }
         return s;
       }
       let best = { start:null, end:null, size:0, names:[] };
-      for(let i=0;i+len-1<days.length;i++){
-        const win = days.slice(i, i+len), m = inter(win), size=m.size;
-        if(size > best.size){ best = { start: win[0], end: win[len-1], size, names: [...m].sort() }; }
+      for (let i=0; i+len-1<days.length; i++){
+        const win = days.slice(i, i+len);
+        const inter = interSets(win);
+        const size = inter.size;
+        if (size > best.size) {
+          best = { start: win[0], end: win[len-1], size, names: [...inter].sort() };
+        }
       }
       return best;
     }
-    const best = bestWindow(av, ${JSON.stringify(DATE_LIST)}, 7);
+    const best = bestWindow(${JSON.stringify(DATE_LIST)}, 7);
 
-    function fmtDE(iso){ const [y,m,d]=iso.split('-'); return d+'.'+m+'.'+y; }
     const period = document.getElementById('period');
     const explain = document.getElementById('explain');
     setTimeout(()=>{
-      period.classList.add('show'); explain.classList.add('show');
+      period.classList.add('show');
+      explain.classList.add('show');
       if(best && best.start){
         period.innerHTML = "Bester Zeitraum: <span class='font-bold'>"+fmtDE(best.start)+"</span> bis <span class='font-bold'>"+fmtDE(best.end)+"</span>";
-        const who = best.names.length ? (" ("+best.names.join(', ')+")") : "";
+        const who = best.names.length ? " ("+best.names.join(', ')+")" : "";
         explain.textContent = "An allen Tagen in diesem Zeitraum können "+best.size+" Personen"+who+".";
       } else {
         period.textContent = "Noch zu wenig Daten für eine Empfehlung.";
@@ -345,15 +353,16 @@ ${baseStyles}
     // ----- Read-only Kalender unten -----
     const calendar = document.getElementById('calendar');
     function dayLabel(iso){ const d=new Date(iso+'T00:00:00Z'); const w=['So','Mo','Di','Mi','Do','Fr','Sa']; return w[d.getUTCDay()]+' '+iso.slice(8,10)+'.05.'; }
-    DATE_LIST.forEach(function(iso){
-      const people = (av.byDate[iso]||[]);
+    ${JSON.stringify(DATE_LIST)}.forEach(function(iso){
+      const people = (av.byDate && av.byDate[iso]) ? av.byDate[iso] : [];
       const card = document.createElement('div');
       card.className='border rounded-xl p-3 bg-gray-50';
-      card.innerHTML = "<div class='flex items-center justify-between mb-2'><div class='font-semibold'>"+dayLabel(iso)+"</div><div class='text-xs text-gray-500'>Wer kann <span class=\"inline-block px-1.5 py-0.5 rounded bg-gray-200 text-gray-800\">"+people.length+"</span></div></div>"+
+      card.innerHTML = "<div class='flex items-center justify-between mb-2'><div class='font-semibold'>"+dayLabel(iso)+"</div><div class='text-xs text-gray-500'>Wer kann <span class=\\"inline-block px-1.5 py-0.5 rounded bg-gray-200 text-gray-800\\">"+people.length+"</span></div></div>"+
                        "<div class='text-xs text-gray-700'>"+(people.join(', ')||'—')+"</div>";
       calendar.appendChild(card);
     });
-  });
+
+  }).catch((e)=>{ console.error(e); });
 })();
 </script>
 </body></html>`;
@@ -363,7 +372,7 @@ app.get('/', (req,res)=>{ res.setHeader('Content-Type','text/html; charset=utf-8
 app.get('/dates', (req,res)=>{ res.setHeader('Content-Type','text/html; charset=utf-8'); res.send(DATES_HTML); });
 app.get('/result', (req,res)=>{ res.setHeader('Content-Type','text/html; charset=utf-8'); res.send(RESULT_HTML); });
 
-// Zielabstimmung speichern
+// Stimmen speichern
 app.post('/api/vote', (req, res) => {
   const { name, selections } = req.body || {};
   if (!name || !Array.isArray(selections) || !selections.length) return res.status(400).json({ ok:false, error: 'Ungültig' });
@@ -377,20 +386,21 @@ app.post('/api/vote', (req, res) => {
   return res.json({ ok: true });
 });
 
-// Verfügbarkeiten lesen (Namen normalisiert & schön angezeigt)
+// Verfügbarkeiten lesen
 app.get('/api/availability', (req,res)=>{
   const store = readStore();
-  const peopleMap = store.people || {}; // canonical -> display name
-  // byPerson: key = canonical name (lowercase), value = array of ISO dates
+  // byPerson: key = lowercase name, value = array of ISO dates
   const byPerson = {};
-  for (const [canon, arr] of Object.entries(store.availability || {})) {
-    byPerson[canon] = Array.from(new Set(arr));
+  for (const [person, arr] of Object.entries(store.availability || {})) {
+    const canon = (person||'').trim().toLowerCase();
+    if (!canon) continue;
+    byPerson[canon] = Array.from(new Set(arr || []));
   }
-  // byDate: ISO -> array of display names
+  // byDate: ISO -> display names (wie eingegeben)
   const byDate = {};
-  for (const [canon, arr] of Object.entries(store.availability || {})) {
-    const display = peopleMap[canon] || canon;
-    for (const d of arr) {
+  for (const [person, arr] of Object.entries(store.availability || {})) {
+    const display = person;
+    for (const d of (arr||[])) {
       if (!byDate[d]) byDate[d] = [];
       if (!byDate[d].includes(display)) byDate[d].push(display);
     }
@@ -398,19 +408,18 @@ app.get('/api/availability', (req,res)=>{
   res.json({ byPerson, byDate });
 });
 
-// Verfügbarkeiten speichern (mit Namens-Normalisierung)
+// Verfügbarkeiten speichern (case-insensitive Schlüssel)
 app.post('/api/availability', (req,res)=>{
   const { name, days } = req.body || {};
   if (!name || !Array.isArray(days)) return res.status(400).json({ ok:false, error: 'Ungültig' });
   const set = new Set(DATE_LIST);
   const cleaned = Array.from(new Set(days.filter(d => set.has(d))));
   const displayName = name.trim();
-  const canon = displayName.toLowerCase(); // NEW: canonical key
+  const canon = displayName.toLowerCase(); // Schlüssel
   const store = readStore();
   if (!store.availability) store.availability = {};
-  if (!store.people) store.people = {};
-  store.availability[canon] = cleaned;   // save by canonical
-  if (!store.people[canon]) store.people[canon] = displayName; // remember display name
+  store.availability[displayName] = cleaned;      // Anzeige wie eingegeben (für byDate)
+  store.availability[canon]       = cleaned;      // zusätzlich kanonisch (für byPerson)
   if (!writeStore(store)) return res.status(500).json({ ok:false, error:'Speichern fehlgeschlagen' });
   return res.json({ ok: true });
 });
